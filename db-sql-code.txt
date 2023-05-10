@@ -1,0 +1,213 @@
+drop table "ITEMS";
+CREATE table "ITEMS" (
+    "ITEM_ID"       number NOT NULL,
+    "ITEM_NAME"     VARCHAR2(50) NOT NULL,
+    "ITEM_PRICE"    number(8) NOT NULL,
+    "ITEM_CATEGORY" VARCHAR2(30) NOT NULL,
+    "ITEM_IMG"      BLOB ,
+	"ITEM_IMG_url"    VARCHAR2(200),
+    constraint  "ITEMS_PK" primary key ("ITEM_ID")
+)
+/
+
+
+
+drop table "USERS";
+CREATE table "USERS" (
+    "USER_EMAIL"    VARCHAR2(50) NOT NULL,
+    "USER_FNAME"    VARCHAR2(30) NOT NULL,
+    "USER_LNAME"    VARCHAR2(30) NOT NULL,
+    "USER_IMG"      BLOB ,
+    "USER_PASSWORD"  VARCHAR2(30) NOT NULL,
+    "USER_Balance" number(8) NOT NULL,
+	"mobile"    VARCHAR2(30) ,
+	"img_url"    VARCHAR2(200) ,
+    constraint  "USERS_PK" primary key ("USER_EMAIL")
+)
+
+/
+
+
+drop table "FRIENDS";
+CREATE table "FRIENDS" (
+    "USER_EMAIL"      VARCHAR2(50) NOT NULL,
+    "FRIEND_EMAIL"    VARCHAR2(50) NOT NULL
+)
+
+/
+
+drop table "USER_OWNED_LIST";
+CREATE table "USER_OWNED_LIST" (
+    "USER_EMAIL" VARCHAR2(50) NOT NULL,
+    "ITEM_ID"    number NOT NULL
+)
+
+/
+drop table "USER_WISH_LIST";
+CREATE table "USER_WISH_LIST" (
+    "USER_EMAIL"   VARCHAR2(50) NOT NULL,
+    "ITEM_ID"      number NOT NULL,
+    "CURRENT_CONTRIBUTION" NUMBER NOT NULL
+)
+
+/
+
+drop table "FRIEND_REQUEST";
+CREATE table "FRIEND_REQUEST" (
+    "USER_EMAIL"   VARCHAR2(50) NOT NULL,
+    "FRIEND_request_EMAIL" VARCHAR2(50) NOT NULL,
+    "REQUEST_DATE" DATE NOT NULL
+)
+
+/
+
+drop table "CONTRIBUTIONS";
+CREATE table "CONTRIBUTIONS" (
+    "FROM_USER_EMAIL" VARCHAR2(100) NOT NULL,
+    "TO_USER_EMAIL"   VARCHAR2(100) NOT NULL,
+    "ITEM_ID"         number NOT NULL,
+    "CON_AMOUNT"      NUMBER NOT NULL,
+    "ON_DATE"         DATE NOT NULL
+)
+/
+
+
+drop table "NOTIFICATIONS";
+CREATE table "NOTIFICATIONS" (
+    "USER_EMAIL" VARCHAR2(100) NOT NULL,
+    "FROM_EMAIL"   VARCHAR2(100) NOT NULL,
+    "NOTI"         VARCHAR2(400) NOT NULL,
+	"NOTIFIED"      VARCHAR2(4) ,
+	"NOTI_DATE"     DATE ,
+	"NOTI_ID"       NUMBER NOT NULL
+)
+
+/
+
+
+drop table "CARD";
+CREATE table "CARD" (
+    "USER_EMAIL"      VARCHAR2(100) NOT NULL,
+    "CARD_ID"         NUMBER NOT NULL,
+    "EXPIRATION_DATE" DATE NOT NULL,
+    "bAN"             NUMBER NOT NULL,
+    constraint  "CARD_PK" primary key ("CARD_ID")
+);
+--------------- end of tables -----------------------------------------
+
+
+---- additions -------
+
+
+-- sequence for item_id -----
+
+CREATE SEQUENCE items_seq
+START WITH 100
+INCREMENT BY 1
+NOCACHE;
+
+-- sequence for notification_id ----
+
+CREATE SEQUENCE noti_seq
+START WITH 100
+INCREMENT BY 1
+NOCACHE;
+
+
+
+
+
+----  contribution transaction handling trigger -----------------------
+
+CREATE OR REPLACE TRIGGER  iwish_contribution_trigger
+AFTER INSERT ON  CONTRIBUTIONS FOR EACH ROW
+DECLARE
+    total_contribution NUMBER;
+    price NUMBER;
+    cont_amt number;
+   
+BEGIN
+
+-- just update the contribution table and add the con amount
+    cont_amt :=  :new.CON_AMOUNT;
+    UPDATE USER_WISH_LIST SET CURRENT_CONTRIBUTION = CURRENT_CONTRIBUTION + cont_amt WHERE ITEM_ID = :new.ITEM_ID and USER_EMAIL = :new.TO_USER_EMAIL;
+    
+    -- Get the total contribution amount for this item
+SELECT CURRENT_CONTRIBUTION INTO total_contribution FROM USER_WISH_LIST WHERE ITEM_ID = :new.ITEM_ID and USER_EMAIL = :new.TO_USER_EMAIL;
+    
+    -- Get the item price
+SELECT ITEM_PRICE INTO PRICE FROM items WHERE ITEM_ID = :new.item_id;
+
+-- decrease budget for the user who contributed 
+UPDATE USERS SET USER_Balance =  USER_Balance-cont_amt WHERE USER_EMAIL = :new.FROM_USER_EMAIL;
+
+-- If the total contribution is equal to or greater than the item price:-
+IF total_contribution >= PRICE THEN
+    
+    -- delete from "USER_WISH_LIST"
+    DELETE FROM USER_WISH_LIST WHERE USER_EMAIL = :new.TO_USER_EMAIL AND ITEM_ID = :new.ITEM_ID;
+
+    -- insert into "USER_OWNED_LIST"
+    INSERT INTO USER_OWNED_LIST (USER_EMAIL, ITEM_ID) VALUES (:new.TO_USER_EMAIL, :new.ITEM_ID);  
+    
+
+   
+END IF;
+end;
+
+-------------------------------------------------------------------
+
+
+------  Friend request acceptance notification TRIGGER ------------
+
+CREATE OR REPLACE TRIGGER  trg_notification_friend
+AFTER INSERT ON  FRIENDS 
+FOR EACH ROW
+DECLARE 
+   fname  VARCHAR2(50);
+   lname  VARCHAR2(50);
+   
+BEGIN
+   SELECT USER_FNAME, USER_LNAME INTO fname, lname FROM users WHERE USER_EMAIL = :new.USER_EMAIL;
+   INSERT INTO notifications (noti_id , user_email, from_email, noti,notified,noti_date) 
+   VALUES ( noti_seq.nextval ,:new.FRIEND_EMAIL,:new.USER_EMAIL, fname || ' ' || lname || ' accepted your friend request' , 'no' , sysdate);
+END;
+
+------ SECOND one for deleting request  from requests ------
+
+CREATE OR REPLACE TRIGGER  accept_friend_request_trigger
+before INSERT ON  FRIENDS FOR EACH ROW
+BEGIN
+
+  DELETE FROM FRIEND_REQUEST
+  WHERE USER_EMAIL = :new.USER_EMAIL
+  AND FRIEND_REQUEST_EMAIL = :new.friend_EMAIL;
+END;
+
+
+
+----------------------------------------------------------------
+
+
+-- trigger to listen every contribution to send notification ---
+
+CREATE OR REPLACE TRIGGER  trg_contributions_notification
+AFTER INSERT ON  CONTRIBUTIONS FOR EACH ROW
+DECLARE
+v_item_name ITEMS.ITEM_NAME%TYPE;
+BEGIN
+SELECT ITEM_NAME INTO v_item_name FROM ITEMS WHERE ITEM_ID = :new.item_id;
+
+INSERT INTO notifications (noti_id,user_email, from_email, noti,notified,noti_date)
+VALUES ( noti_seq.nextval , :new.to_user_email, :new.from_user_email,
+'New contribution from ' || :new.from_user_email || ' to you' ||
+' on item ' || v_item_name || ' for amount ' || :new.con_amount , 'no' , sysdate);
+END;
+
+-----------------------------------------------------------------------
+-----------------------------------------------------------------------
+
+
+
+
+
